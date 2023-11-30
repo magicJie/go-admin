@@ -77,7 +77,7 @@ func (is *Iris) AddHandler(method, path string, handlers context.Handlers) {
 	is.app.Handle(strings.ToUpper(method), path, func(c iris.Context) {
 		ctx := context.NewContext(c.Request())
 
-		var params = map[string]string{}
+		params := map[string]string{}
 		c.Params().Visit(func(key string, value string) {
 			params[key] = value
 		})
