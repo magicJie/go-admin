@@ -2,6 +2,7 @@ package models
 
 import (
 	"database/sql"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -115,7 +116,6 @@ func (t UserModel) Template(str string) string {
 }
 
 func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams url.Values) bool {
-
 	// path, _ = url.PathUnescape(path)
 
 	if t.IsSuperAdmin() {
@@ -146,7 +146,6 @@ func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams ur
 	}
 
 	for _, v := range t.Permissions {
-
 		if v.HttpMethod[0] == "" || inMethodArr(v.HttpMethod, method) {
 
 			if v.HttpPath[0] == "*" {
@@ -165,7 +164,6 @@ func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams ur
 				}
 
 				reg, err := regexp.Compile(matchPath)
-
 				if err != nil {
 					logger.Error("CheckPermissions error: ", err)
 					continue
@@ -263,8 +261,7 @@ func (t UserModel) WithRoles() UserModel {
 }
 
 func (t UserModel) GetAllRoleId() []interface{} {
-
-	var ids = make([]interface{}, len(t.Roles))
+	ids := make([]interface{}, len(t.Roles))
 
 	for key, role := range t.Roles {
 		ids[key] = role.Id
@@ -275,8 +272,7 @@ func (t UserModel) GetAllRoleId() []interface{} {
 
 // WithPermissions query the permission info of the user.
 func (t UserModel) WithPermissions() UserModel {
-
-	var permissions = make([]map[string]interface{}, 0)
+	permissions := make([]map[string]interface{}, 0)
 
 	roleIds := t.GetAllRoleId()
 
@@ -317,49 +313,86 @@ func (t UserModel) WithPermissions() UserModel {
 	return t
 }
 
-// WithMenus query the menu info of the user.
 func (t UserModel) WithMenus() UserModel {
-
 	var menuIdsModel []map[string]interface{}
 
+	// 根据用户是否为超级管理员来获取相应的菜单项
 	if t.IsSuperAdmin() {
-		menuIdsModel, _ = t.Table("goadmin_role_menu").
-			LeftJoin("goadmin_menu", "goadmin_menu.id", "=", "goadmin_role_menu.menu_id").
-			Select("menu_id", "parent_id").
-			All()
+		menuIdsModel, _ = t.fetchSuperAdminMenus()
 	} else {
-		rolesId := t.GetAllRoleId()
-		if len(rolesId) > 0 {
-			menuIdsModel, _ = t.Table("goadmin_role_menu").
-				LeftJoin("goadmin_menu", "goadmin_menu.id", "=", "goadmin_role_menu.menu_id").
-				WhereIn("goadmin_role_menu.role_id", rolesId).
-				Select("menu_id", "parent_id").
-				All()
-		}
+		menuIdsModel, _ = t.fetchUserMenus(t.GetAllRoleId())
 	}
 
-	var menuIds []int64
-
-	for _, mid := range menuIdsModel {
-		if parentId, ok := mid["parent_id"].(int64); ok && parentId != 0 {
-			for _, mid2 := range menuIdsModel {
-				if mid2["menu_id"].(int64) == mid["parent_id"].(int64) {
-					menuIds = append(menuIds, mid["menu_id"].(int64))
-					break
-				}
-			}
-		} else {
-			menuIds = append(menuIds, mid["menu_id"].(int64))
-		}
-	}
-
+	// 解析菜单项并构建菜单 ID 列表
+	menuIds := t.parseMenuIds(menuIdsModel)
 	t.MenuIds = menuIds
 	return t
 }
 
+func (t UserModel) fetchSuperAdminMenus() ([]map[string]interface{}, error) {
+	return t.Table("goadmin_role_menu").
+		LeftJoin("goadmin_menu", "goadmin_menu.id", "=", "goadmin_role_menu.menu_id").
+		Select("menu_id", "parent_id").
+		All()
+}
+
+func (t UserModel) fetchUserMenus(rolesId []interface{}) ([]map[string]interface{}, error) {
+	if len(rolesId) > 0 {
+		return t.Table("goadmin_role_menu").
+			LeftJoin("goadmin_menu", "goadmin_menu.id", "=", "goadmin_role_menu.menu_id").
+			WhereIn("goadmin_role_menu.role_id", rolesId).
+			Select("menu_id", "parent_id").
+			All()
+	}
+	return nil, nil
+}
+
+func (t UserModel) parseMenuIds(menuIdsModel []map[string]interface{}) []int64 {
+	var menuIds []int64
+	for _, mid := range menuIdsModel {
+		menuId, err := parseToInt64(mid["menu_id"])
+		if err != nil {
+			return menuIds
+		}
+		parentId, err := parseToInt64(mid["parent_id"])
+		if err != nil {
+			return menuIds
+		}
+
+		if parentId != 0 {
+			// 检查是否已经存在该父菜单 ID
+			if contains(menuIds, parentId) {
+				menuIds = append(menuIds, menuId)
+			}
+		} else {
+			menuIds = append(menuIds, menuId)
+		}
+	}
+	return menuIds
+}
+
+func parseToInt64(val interface{}) (int64, error) {
+	switch v := val.(type) {
+	case int64:
+		return v, nil
+	case []uint8:
+		return strconv.ParseInt(string(v), 10, 64)
+	default:
+		return 0, fmt.Errorf("invalid type")
+	}
+}
+
+func contains(slice []int64, val int64) bool {
+	for _, item := range slice {
+		if item == val {
+			return true
+		}
+	}
+	return false
+}
+
 // New create a user model.
 func (t UserModel) New(username, password, name, avatar string) (UserModel, error) {
-
 	id, err := t.WithTx(t.Tx).Table(t.TableName).Insert(dialect.H{
 		"username": username,
 		"password": password,
@@ -378,7 +411,6 @@ func (t UserModel) New(username, password, name, avatar string) (UserModel, erro
 
 // Update update the user model.
 func (t UserModel) Update(username, password, name, avatar string, isUpdateAvatar bool) (int64, error) {
-
 	fieldValues := dialect.H{
 		"username":   username,
 		"name":       name,
@@ -400,7 +432,6 @@ func (t UserModel) Update(username, password, name, avatar string, isUpdateAvata
 
 // UpdatePwd update the password of the user model.
 func (t UserModel) UpdatePwd(password string) UserModel {
-
 	_, _ = t.Table(t.TableName).
 		Where("id", "=", t.Id).
 		Update(dialect.H{
